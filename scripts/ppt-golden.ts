@@ -9,6 +9,7 @@ import { PNG } from 'pngjs';
 import { buildDeckHtml } from '../src/lib/ppt/builder';
 import { createGoldenOutline, PPT_GOLDEN_TEMPLATE_VERSION, PPT_GOLDEN_VIEWPORT } from '../src/lib/ppt/golden-fixture';
 import { browserCandidates } from '../src/lib/ppt/platform';
+import { baselineDirectory, browserArguments, environmentSnapshot, loadBaselineManifest, requireEnvironment, verifyBaselineImages } from './ppt-golden-lib.mjs';
 
 type Command = 'check' | 'geometry' | 'rebaseline';
 type Rect = { x: number; y: number; width: number; height: number; top: number; right: number; bottom: number; left: number };
@@ -32,10 +33,12 @@ type Manifest = {
   viewport: typeof PPT_GOLDEN_VIEWPORT;
   pageCount: number;
   pages: Array<{ page: number; file: string; sha256: string; geometry: GeometryPage }>;
+  environment: ReturnType<typeof environmentSnapshot>;
+  approval: Record<string, unknown>;
 };
 
 const ROOT = process.cwd();
-const BASELINE = path.join(ROOT, 'tests', 'ppt-golden', 'baseline');
+const BASELINE = baselineDirectory(path.join(ROOT, 'tests', 'ppt-golden', 'baseline'));
 const OUTPUT = path.join(ROOT, 'build', 'ppt-golden');
 const command = (process.argv[2] || 'check') as Command;
 
@@ -232,39 +235,42 @@ async function main(): Promise<void> {
   if (command === 'rebaseline' && !process.argv.includes('--approve-current-visual')) throw new Error('Rebaseline requires --approve-current-visual');
   const chrome = chromePath();
   if (!await exists(chrome)) throw new Error(`Chrome not found: ${chrome}`);
+  const manifest = loadBaselineManifest(BASELINE) as Manifest;
+  verifyBaselineImages(BASELINE, manifest.pages);
   await rm(OUTPUT, { recursive: true, force: true });
   await mkdir(OUTPUT, { recursive: true });
   const html = (await buildDeckHtml(createGoldenOutline())).toString('utf8');
   const htmlPath = path.join(OUTPUT, 'golden.html');
   await writeFile(htmlPath, html);
-  const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'] });
+  const args = browserArguments();
+  const browser = await chromium.launch({ executablePath: chrome, headless: true, args });
   try {
     const version = browser.version();
+    const environment = environmentSnapshot(chrome, version, playwrightVersion(), args, PPT_GOLDEN_VIEWPORT);
+    requireEnvironment(manifest.environment, environment);
     const captured = await captureAll(browser, htmlPath, path.join(OUTPUT, 'candidate'));
     if (command === 'geometry') {
       console.log(`PPT golden geometry passed: ${captured.length} pages`);
       return;
     }
     if (command === 'rebaseline') {
-      await rm(BASELINE, { recursive: true, force: true });
-      await mkdir(BASELINE, { recursive: true });
+      // Geometry may be refreshed only when captures equal the staged approved images.
       const pages: Manifest['pages'] = [];
       for (const item of captured) {
-        await writeFile(path.join(BASELINE, item.file), item.buffer);
+        const approved = manifest.pages.find(page => page.file === item.file);
+        if (!approved || approved.sha256 !== sha256(item.buffer)) throw new Error(`Capture differs from approved candidate: ${item.file}`);
         pages.push({ page: item.geometry.page, file: item.file, sha256: sha256(item.buffer), geometry: item.geometry });
       }
-      const manifest: Manifest = {
+      const updated: Manifest = {
+        ...manifest,
         schemaVersion: 1, templateVersion: PPT_GOLDEN_TEMPLATE_VERSION, createdAt: new Date().toISOString(),
         platform: process.platform, architecture: process.arch, chromeVersion: version, playwrightVersion: playwrightVersion(),
-        viewport: PPT_GOLDEN_VIEWPORT, pageCount: captured.length, pages,
+        viewport: PPT_GOLDEN_VIEWPORT, pageCount: captured.length, pages, environment,
       };
-      await writeFile(path.join(BASELINE, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-      console.log(`PPT golden baseline created explicitly: ${captured.length} pages`);
+      await writeFile(path.join(BASELINE, 'manifest.json'), `${JSON.stringify(updated, null, 2)}\n`);
+      console.log(`PPT approved geometry recorded: ${captured.length} pages; images unchanged`);
       return;
     }
-    const manifestPath = path.join(BASELINE, 'manifest.json');
-    if (!await exists(manifestPath)) throw new Error('Golden manifest missing; run the explicit rebaseline command only after reviewing all screenshots');
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Manifest;
     const runtime = { platform: process.platform, architecture: process.arch, chromeVersion: version, playwrightVersion: playwrightVersion() };
     for (const key of Object.keys(runtime) as Array<keyof typeof runtime>) {
       if (manifest[key] !== runtime[key]) throw new Error(`Golden runtime mismatch for ${key}: expected ${manifest[key]}, got ${runtime[key]}`);

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { createDeviceToken, createSessionToken, deviceOwnerHash, verifyDeviceToken, verifyInvitePassword, verifySessionToken } from './auth';
@@ -612,6 +614,25 @@ test('real Python engine builds a single-file HTML deck', async context => {
   assert.match(text, /<span>毓灵 YuLing AI<\/span>/);
   assert.equal((text.match(/<section class="slide/g) || []).length, 7);
   assert.equal((text.match(/AI 辅助生成，请核对/g) || []).length, 7);
+});
+
+test('real Python engine failure is propagated by the builder', async context => {
+  const engine = availableEngine();
+  if (!engine) return context.skip('local engine is unavailable');
+  const originalRoot = process.env.PPT_ENGINE_ROOT;
+  const directory = await mkdtemp(path.join(tmpdir(), 'yuling-builder-failure-'));
+  try {
+    await mkdir(path.join(directory, 'tools'));
+    await copyFile(path.join(engine, 'tools/build_deck.py'), path.join(directory, 'tools/build_deck.py'));
+    process.env.PPT_ENGINE_ROOT = directory;
+    await assert.rejects(() => buildDeckHtml(outline), /PPT builder failed \(1\):/);
+  } finally {
+    if (originalRoot === undefined) delete process.env.PPT_ENGINE_ROOT;
+    else process.env.PPT_ENGINE_ROOT = originalRoot;
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+    assert.ok(path.basename(directory).startsWith('yuling-builder-failure-'));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('browser QA checks every page and rapid navigation', async context => {
