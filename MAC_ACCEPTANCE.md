@@ -1,18 +1,20 @@
 # Mac M5 owner handoff — Issue #1
 
-Status: **native Mac unverified; no Mac visual target approved or adopted**.
+Status: **Issue #7 Mac repeatability retest pending; no Mac visual target approved or adopted**.
+The owner reported partial native M5 checks at the preceding SHA; developer-side
+evidence for this follow-up is Windows only. See Issue #7 for the owner report.
 Windows/WSL2 tests of routing and error handling do not establish Mac acceptance.
 Run this procedure on native Apple Silicon, outside Rosetta, using synthetic data.
 
 ## Exact candidate sources and tools
 
-- Engine code: `a64dce7ec2aba6b2b3f1c90366c635ac01076d06` (PR #5).
-- Application code: `7772fd5e498b3521f9c037c8ce6b0af0e33a7454` (PR #6).
+- Engine code: `be73ccd4e811bd877fb2635fd7dfc3ca3ad8e192` (PR #5).
+- Application code: `005c7726de9af287f6059b239ea2cb06bb2a64ff` (PR #6).
 - Python 3.12, uv **0.13.4**, Pillow **13.0.0**, Python Playwright **1.60.0**, pytest **9.1.1**.
 - Native Node **22.23.3**, pnpm **9.0.0**, application playwright-core **1.64.0**.
 - Chrome for Testing **152.0.7977.64**, mac-arm64; viewport **1920×1080**.
 - Engine launch arguments: `--disable-gpu --force-color-profile=srgb --disable-lcd-text --disable-partial-raster`.
-- Application Mac arguments: `--no-sandbox --disable-dev-shm-usage --font-render-hinting=none`.
+- Application Mac arguments: `--no-sandbox --disable-dev-shm-usage --font-render-hinting=none --disable-gpu`.
 
 The two SHAs above are the local regression pair. Later report-only commits must
 be identified separately. If source changes, record the new pair and repeat the
@@ -37,8 +39,8 @@ export TOOLS="$WORK/tools" EVIDENCE="$WORK/evidence"
 mkdir "$TOOLS" "$EVIDENCE"
 git clone https://github.com/YuLing-Ai-Tech/yuling-ai-ppt.git "$WORK/yuling-ai-ppt"
 git clone https://github.com/YuLing-Ai-Tech/mini-app.git "$WORK/mini-app"
-git -C "$WORK/yuling-ai-ppt" switch --detach a64dce7ec2aba6b2b3f1c90366c635ac01076d06
-git -C "$WORK/mini-app" switch --detach 7772fd5e498b3521f9c037c8ce6b0af0e33a7454
+git -C "$WORK/yuling-ai-ppt" switch --detach be73ccd4e811bd877fb2635fd7dfc3ca3ad8e192
+git -C "$WORK/mini-app" switch --detach 005c7726de9af287f6059b239ea2cb06bb2a64ff
 git -C "$WORK/yuling-ai-ppt" rev-parse HEAD
 git -C "$WORK/mini-app" rev-parse HEAD
 test -z "$(git -C "$WORK/yuling-ai-ppt" status --porcelain)"
@@ -165,12 +167,15 @@ pnpm validate 2>&1 | tee "$EVIDENCE/validate.log"
 pnpm test:portable 2>&1 | tee "$EVIDENCE/portable.log"
 pnpm test:ppt 2>&1 | tee "$EVIDENCE/integration.log"
 pnpm test:ppt:golden:geometry 2>&1 | tee "$EVIDENCE/geometry.log"
-pnpm exec tsx scripts/ppt-golden.ts candidate --output "$EVIDENCE/app-candidate" \
-  2>&1 | tee "$EVIDENCE/app-candidate.log"
+for attempt in 1 2; do
+  pnpm exec tsx scripts/ppt-golden.ts candidate --output "$EVIDENCE/app-candidate-$attempt" \
+    2>&1 | tee "$EVIDENCE/app-candidate-$attempt.log"
+done
 pnpm build 2>&1 | tee "$EVIDENCE/build.log"
 ```
 
-Expect 9 engine pages and 12 application pages, two independent captures each,
+Expect 9 engine pages and two complete app candidate commands. Each app command
+captures all 12 pages twice in independent browser launches. Require
 zero repeat differences, and all geometry checks passing. Candidate capture
 does not approve or adopt any PNG. It refuses existing/in-repository output,
 dirty sources, incorrect browser/Playwright, incomplete fonts and inconsistent

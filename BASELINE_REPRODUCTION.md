@@ -1,3 +1,101 @@
+# Issue #7: Mac capture arguments — Windows follow-up (2026-10-21)
+
+## Current status / 我跑过
+
+All Windows checks below passed on app `005c7726de9af287f6059b239ea2cb06bb2a64ff` paired with engine
+`be73ccd4e811bd877fb2635fd7dfc3ca3ad8e192`. This is the exact committed code pair used for the run;
+the report and handoff are later documentation-only changes. No new WSL2 or
+native Mac execution is claimed in this follow-up. Mac owner retest is pending.
+
+Continue existing PR #6 for [Issue #7](https://github.com/YuLing-Ai-Tech/mini-app/issues/7).
+The owner reports prior native M5 validation/portable/integration/geometry passes
+and two failed app candidate commands at the previous app SHA. Those are owner
+reports, not developer-side runs. This change adds --disable-gpu for darwin in
+the shared capture argument function; Windows and Linux arguments are unchanged.
+Exact platform assertions replace the old Mac-equals-Linux assertion.
+
+## Environment and commands
+
+Windows 11 x64 build 26200; Node 22.23.3; pnpm 9.0.0; Python 3.12.10;
+Pillow 13.0.0; Chrome for Testing 152.0.7977.64; playwright-core 1.64.0;
+viewport 1920x1080. Explicit PPT_ENGINE_ROOT, PPT_PYTHON_PATH and PPT_CHROME_PATH
+select the recorded engine, isolated builder and approved Windows browser.
+PYTHONUTF8=1, PYTHONIOENCODING=utf-8, NEXT_TELEMETRY_DISABLED=1, NO_COLOR=1.
+The task runner sets npm_config_update_notifier=false only in its process
+environment, following the initial install interruption described below.
+
+| Command | Actual result | Exit |
+| --- | --- | --- |
+| `pnpm install --frozen-lockfile` | frozen lock unchanged | 0 |
+| `node --test scripts/ppt-golden.test.mjs` | 11 passed, 0 failed/skipped | 0 |
+| `pnpm validate` | TypeScript + ESLint passed | 0 |
+| `pnpm test:portable` | 15 script + 38 unit passed, 0 failed/skipped | 0 |
+| `pnpm test:ppt` | 46 passed, 0 failed/skipped | 0 |
+| `pnpm test:ppt:golden:geometry` | 12 pages passed | 0 |
+| `pnpm test:ppt:golden` | 12 pages, zero pixels; both mutations rejected | 0 |
+| `pnpm exec tsx scripts/ppt-golden.ts candidate --output <fresh-external-directory>` | 2 independent captures x 12 pages, zero differences | 0 |
+| `pnpm build` | production build passed | 0 |
+| `pnpm audit --json` | 0 findings | 0 |
+| `pnpm audit --prod --json` | 0 findings | 0 |
+
+Cross-repository tests include synthetic single-file Python construction,
+browser QA and an actual Python builder failure propagated through the wrapper.
+The formal Windows Golden gate and candidate command are separate checks.
+Candidate PNGs remain outside the repositories and do not replace any baseline.
+
+### Preserved expected failure and installation interruption
+
+The focused new Mac assertion failed on the old implementation (exit 1; one
+passed/one failed), specifically showing the missing --disable-gpu argument.
+The same two assertions passed after the fix (exit 0). This deliberate red run
+is retained; it is not counted as an acceptance pass.
+
+The first frozen install printed completed dependency installation but remained
+alive with a registry connection. Inspection found pnpm's background update
+notifier enabled. The task-owned process was stopped after 101.44 seconds
+(recorded exit 4294967295). Repeating the same install with update notifications
+disabled exited 0. No dependency, lockfile, audit or test was disabled.
+
+## Evidence hashes
+
+Raw logs and system paths stay outside Git. SHA256 values identify the retained
+local evidence without publishing private absolute paths.
+
+| Evidence | SHA256 |
+| --- | --- |
+| `install-retry1.log` | `a5060800a2c755c9148cce99f1328ee3da541fb69c5b55d9cdbae1959813005d` |
+| `platform-suite.log` | `f587cce064f36e07d8c8a289311c8e014946a3a534485ecf951676d4625257d8` |
+| `validate.log` | `54fdc3e2a6f09191347779c0a0bf18c0e76d6c854aede2cb3ced531e4177fa6c` |
+| `portable.log` | `3d963bb5a8e5568dc0ff9747efe7aa41ede3db7e3c5271b6c1c4bc8351b85e3b` |
+| `integration.log` | `3acee6a4ce8fbb6a4754ca5cc6d62f118167fbf160ea9fc33b29b5d71f88a305` |
+| `geometry.log` | `9453e714e275a3974bed38e901bfbbc00c1bda9bfdd68ec5d2706125f7224e78` |
+| `pixel.log` | `dc850b5d78b12c2f7fe895175f023e2794879eb1fe757c3bcd4ddac04f74543d` |
+| `candidate.log` | `2ee3e3625564ce20e8d3e76ad2ed1ba687a5b3438fc3d2ad3081f9faf68847bb` |
+| `build.log` | `4d6e84a872a7204041dc1b377c157c816e0d0a29ac15c4d2b2dca0cd0f88268d` |
+| `audit-full.log` | `6cadcf2e93ca634e41afe74f167d3a4f653bef848f631edcb2b577d84b5870b9` |
+| `audit-production.log` | `36872159045ec6e4454410c8f52e9219e00a49a67cc78a3a520e3a3744ac15bf` |
+| `candidate/candidate.json` | `dcd78081275075a5718b58faeec8e8d700f6a87fc0eff94ac7a6a2c6948600b9` |
+| `platform-red.log` | `260a6c70fa1f628bbae2b1586130d9e830b63607f9291c2cbf0d1748282c6e83` |
+| `platform-green.log` | `fdec91767f0c6c84d791d1dcdf1e78ed32293d034b5d46da40cc33db7a5c6f4a` |
+| `install.log` | `74aff9b68071abff0b7252f17cdefe5fadeb97e22a30a1fc3b8c93bf0d918e71` |
+
+## Handoff, remaining gates and rollback
+
+Use MAC_ACCEPTANCE.md with the exact code pair above. The owner must run two
+fresh Mac candidate commands in different external directories; each command
+must complete two independent 12-page captures with zero differences. Windows
+passing is not Mac acceptance. Formal Mac pixels still fail when its approved
+baseline is absent. Do not approve/adopt PNGs or close the issue from these results.
+
+Golden images/manifests, pixel tolerance, renderer, dependencies and
+ENGINE_BASELINE.json are unchanged. Final engine-lock pairing follows the
+approved engine merge separately. Review, Mac acceptance and merge remain owner
+gates. Roll back this fix using a new inverse commit and retain all evidence.
+
+---
+
+## Historical report — results below are earlier runs
+
 # PPT Issue #1：Mac 兼容修复与 Python 工具链复验
 
 ## 当前结论（2026-10-21）
