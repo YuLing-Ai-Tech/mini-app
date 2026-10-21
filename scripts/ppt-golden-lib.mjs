@@ -29,7 +29,7 @@ export function loadBaselineManifest(directory) {
 export function browserArguments(platform = process.platform) {
   platformKey(platform, platform === 'darwin' ? 'arm64' : 'x64');
   const args = ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'];
-  return platform === 'win32' ? [...args, '--disable-gpu'] : args;
+  return platform === 'win32' || platform === 'darwin' ? [...args, '--disable-gpu'] : args;
 }
 
 export function fontInventoryFingerprint(root, platform = process.platform) {

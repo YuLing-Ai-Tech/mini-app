@@ -29,7 +29,7 @@ test('visual platform selection never falls back to another target', () => {
 
 test('Windows software rendering does not change Linux capture arguments', () => {
   assert.deepEqual(browserArguments('linux'), ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']);
-  assert.deepEqual(browserArguments('win32'), [...browserArguments('linux'), '--disable-gpu']);
+  assert.deepEqual(browserArguments('win32'), ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none', '--disable-gpu']);
 });
 
 test('missing platform manifest is not replaced by the historical manifest', () => temporary(directory => {
@@ -70,9 +70,9 @@ test('font inventory changes are detected and Linux nested fonts are included', 
   assert.notEqual(fontInventoryFingerprint(directory, 'win32'), windows);
 }));
 
-test('Mac has a native target and retains its previous launch arguments', () => {
+test('Mac has a native target and uses software rendering', () => {
   assert.equal(platformKey('darwin', 'arm64'), 'darwin-arm64');
-  assert.deepEqual(browserArguments('darwin'), browserArguments('linux'));
+  assert.deepEqual(browserArguments('darwin'), ['--no-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none', '--disable-gpu']);
   temporary(directory => {
     assert.throws(() => loadBaselineManifest(baselineDirectory(directory, 'darwin', 'arm64')), /Mac visual baseline not established/);
   });
