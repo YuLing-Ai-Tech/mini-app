@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,9 +10,9 @@ import { PNG } from 'pngjs';
 import { buildDeckHtml } from '../src/lib/ppt/builder';
 import { createGoldenOutline, PPT_GOLDEN_TEMPLATE_VERSION, PPT_GOLDEN_VIEWPORT } from '../src/lib/ppt/golden-fixture';
 import { browserCandidates } from '../src/lib/ppt/platform';
-import { baselineDirectory, browserArguments, environmentSnapshot, loadBaselineManifest, requireEnvironment, verifyBaselineImages } from './ppt-golden-lib.mjs';
+import { baselineForCommand, browserArguments, environmentSnapshot, requireEnvironment, reserveCandidateDirectory } from './ppt-golden-lib.mjs';
 
-type Command = 'check' | 'geometry' | 'rebaseline';
+type Command = 'check' | 'geometry' | 'rebaseline' | 'candidate';
 type Rect = { x: number; y: number; width: number; height: number; top: number; right: number; bottom: number; left: number };
 type GeometryPage = {
   page: number;
@@ -38,7 +39,6 @@ type Manifest = {
 };
 
 const ROOT = process.cwd();
-const BASELINE = baselineDirectory(path.join(ROOT, 'tests', 'ppt-golden', 'baseline'));
 const OUTPUT = path.join(ROOT, 'build', 'ppt-golden');
 const command = (process.argv[2] || 'check') as Command;
 
@@ -231,12 +231,19 @@ async function mutationMustFail(browser: Browser, html: string, mutation: 'rotat
 }
 
 async function main(): Promise<void> {
-  if (!['check', 'geometry', 'rebaseline'].includes(command)) throw new Error(`Unknown command: ${command}`);
+  if (!['check', 'geometry', 'rebaseline', 'candidate'].includes(command)) throw new Error(`Unknown command: ${command}`);
+  if (command === 'candidate') {
+    const outputIndex = process.argv.indexOf('--output');
+    if (outputIndex < 0 || !process.argv[outputIndex + 1]) throw new Error('Candidate requires --output <new directory outside repositories>');
+    await captureCandidate(reserveCandidateDirectory(process.argv[outputIndex + 1]));
+    return;
+  }
   if (command === 'rebaseline' && !process.argv.includes('--approve-current-visual')) throw new Error('Rebaseline requires --approve-current-visual');
+  const target = baselineForCommand(command, path.join(ROOT, 'tests', 'ppt-golden', 'baseline'));
+  const BASELINE = target?.directory;
+  const manifest = target?.manifest as Manifest | undefined;
   const chrome = chromePath();
   if (!await exists(chrome)) throw new Error(`Chrome not found: ${chrome}`);
-  const manifest = loadBaselineManifest(BASELINE) as Manifest;
-  verifyBaselineImages(BASELINE, manifest.pages);
   await rm(OUTPUT, { recursive: true, force: true });
   await mkdir(OUTPUT, { recursive: true });
   const html = (await buildDeckHtml(createGoldenOutline())).toString('utf8');
@@ -246,13 +253,14 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ executablePath: chrome, headless: true, args });
   try {
     const version = browser.version();
-    const environment = environmentSnapshot(chrome, version, playwrightVersion(), args, PPT_GOLDEN_VIEWPORT);
-    requireEnvironment(manifest.environment, environment);
+    const environment = command === 'geometry' ? undefined : environmentSnapshot(chrome, version, playwrightVersion(), args, PPT_GOLDEN_VIEWPORT);
+    if (manifest) requireEnvironment(manifest.environment, environment);
     const captured = await captureAll(browser, htmlPath, path.join(OUTPUT, 'candidate'));
     if (command === 'geometry') {
       console.log(`PPT golden geometry passed: ${captured.length} pages`);
       return;
     }
+    if (!manifest || !BASELINE || !environment) throw new Error('Platform baseline environment missing');
     if (command === 'rebaseline') {
       // Geometry may be refreshed only when captures equal the staged approved images.
       const pages: Manifest['pages'] = [];
@@ -307,6 +315,66 @@ async function main(): Promise<void> {
     console.log(`PPT golden passed: ${captured.length} pages, zero pixel difference, 2 mutations rejected`);
   } finally {
     await browser.close();
+  }
+}
+
+function sourceRecord(root: string): { commit: string; dirty: boolean } {
+  return {
+    commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
+    dirty: Boolean(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()),
+  };
+}
+
+async function captureCandidate(output: string): Promise<void> {
+  const engine = process.env.PPT_ENGINE_ROOT;
+  if (!engine) throw new Error('Candidate requires an explicit PPT_ENGINE_ROOT');
+  const sources = { app: sourceRecord(ROOT), engine: sourceRecord(engine) };
+  const report: Record<string, unknown> = { status: 'incomplete', approved: false, sources, nodeVersion: process.version };
+  try {
+    if (sources.app.dirty || sources.engine.dirty) throw new Error('Candidate capture requires clean source commits');
+    const html = (await buildDeckHtml(createGoldenOutline())).toString('utf8');
+    const htmlPath = path.join(output, 'golden.html');
+    await writeFile(htmlPath, html);
+    const chrome = chromePath();
+    const args = browserArguments();
+    const runs: Awaited<ReturnType<typeof captureAll>>[] = [];
+    let firstEnvironment: ReturnType<typeof environmentSnapshot> | undefined;
+    for (const name of ['candidate-a', 'candidate-b']) {
+      const browser = await chromium.launch({ executablePath: chrome, headless: true, args });
+      try {
+        const environment = environmentSnapshot(chrome, browser.version(), playwrightVersion(), args, PPT_GOLDEN_VIEWPORT);
+        if (environment.chromeVersion !== '152.0.7977.64' || environment.playwrightVersion !== '1.64.0') throw new Error('Candidate requires Chrome 152.0.7977.64 and Playwright 1.64.0');
+        if (firstEnvironment) requireEnvironment(firstEnvironment, environment);
+        firstEnvironment = environment;
+        const captures = await captureAll(browser, htmlPath, path.join(output, name));
+        if (captures.length !== 12) throw new Error('Candidate requires all 12 pages');
+        runs.push(captures);
+        await writeFile(path.join(output, name, 'capture.json'), JSON.stringify({ environment, pages: captures.map(item => ({ file: item.file, sha256: sha256(item.buffer), geometry: item.geometry })) }, null, 2));
+      } finally {
+        await browser.close();
+      }
+    }
+    const differences = [];
+    for (let index = 0; index < runs[0].length; index += 1) {
+      const a = runs[0][index];
+      const b = runs[1][index];
+      const diff = strictDiff(a.buffer, b.buffer);
+      if (diff.pixels || sha256(a.buffer) !== sha256(b.buffer) || JSON.stringify(a.geometry) !== JSON.stringify(b.geometry)) {
+        differences.push({ page: index + 1, pixels: diff.pixels });
+        await writeFile(path.join(output, `diff-${index + 1}.png`), PNG.sync.write(diff.image));
+      }
+    }
+    report.differences = differences;
+    report.environment = firstEnvironment;
+    if (differences.length) throw new Error('Independent candidate captures differ; evidence retained');
+    if (JSON.stringify(sources) !== JSON.stringify({ app: sourceRecord(ROOT), engine: sourceRecord(engine) })) throw new Error('Source changed during candidate capture');
+    report.status = 'repeatable; owner review required';
+    console.log('PPT candidate repeatability passed: 12 pages; owner approval still required');
+  } catch (error) {
+    report.failure = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    await writeFile(path.join(output, 'candidate.json'), JSON.stringify(report, null, 2));
   }
 }
 

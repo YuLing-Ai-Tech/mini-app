@@ -4,7 +4,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { baselineDirectory, browserArguments, fontInventoryFingerprint, loadBaselineManifest, platformKey, requireEnvironment, verifyBaselineImages } from './ppt-golden-lib.mjs';
+import * as visual from './ppt-golden-lib.mjs';
 
 function temporary(callback) {
   const directory = mkdtempSync(path.join(tmpdir(), 'yuling-visual-test-'));
@@ -65,4 +68,46 @@ test('font inventory changes are detected and Linux nested fonts are included', 
   assert.notEqual(fontInventoryFingerprint(directory, 'linux'), linux);
   writeFileSync(path.join(directory, 'one.ttf'), 'changed font');
   assert.notEqual(fontInventoryFingerprint(directory, 'win32'), windows);
+}));
+
+test('Mac has a native target and retains its previous launch arguments', () => {
+  assert.equal(platformKey('darwin', 'arm64'), 'darwin-arm64');
+  assert.deepEqual(browserArguments('darwin'), browserArguments('linux'));
+  temporary(directory => {
+    assert.throws(() => loadBaselineManifest(baselineDirectory(directory, 'darwin', 'arm64')), /Mac visual baseline not established/);
+  });
+});
+
+test('geometry and candidate do not require an approved pixel manifest', () => temporary(directory => {
+  assert.equal(visual.baselineForCommand('geometry', directory, 'darwin', 'arm64'), null);
+  assert.equal(visual.baselineForCommand('candidate', directory, 'darwin', 'arm64'), null);
+  assert.throws(() => visual.baselineForCommand('check', directory, 'darwin', 'arm64'), /Mac visual baseline not established/);
+}));
+
+test('registered Mac fonts include custom locations and reject incomplete inventory', () => temporary(directory => {
+  const file = path.join(directory, 'custom.otf');
+  writeFileSync(file, 'font');
+  const inventory = { SPFontsDataType: [{ path: file }] };
+  const before = visual.macFontFingerprint(inventory);
+  writeFileSync(file, 'changed');
+  assert.notEqual(visual.macFontFingerprint(inventory), before);
+  for (const invalid of [{}, { SPFontsDataType: [] }, { SPFontsDataType: [{}] }]) {
+    assert.throws(() => visual.macFontFingerprint(invalid), /font inventory/);
+  }
+  rmSync(file);
+  assert.throws(() => visual.macFontFingerprint(inventory));
+}));
+
+test('candidate output cannot overwrite evidence or live inside a repository', () => temporary(directory => {
+  assert.throws(() => visual.reserveCandidateDirectory(directory), /already exists/);
+  writeFileSync(path.join(directory, '.git'), 'gitdir: elsewhere');
+  assert.throws(() => visual.reserveCandidateDirectory(path.join(directory, 'new')), /outside Git repositories/);
+}));
+
+test('real candidate command propagates output protection failure', () => temporary(directory => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const result = spawnSync(process.execPath, [path.join(root, 'node_modules/tsx/dist/cli.mjs'),
+    path.join(root, 'scripts/ppt-golden.ts'), 'candidate', '--output', directory], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Candidate output already exists/);
 }));
